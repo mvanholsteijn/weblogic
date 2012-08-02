@@ -1,0 +1,455 @@
+#!/bin/bash
+# NAME
+#	weblogic - weblogic service control script
+#
+# SYNOPSIS
+#	weblogic [start|stop|status]
+#
+# DESCRIPTION
+#	This script will start all weblogic servers from installed domains on this machine.
+#	It uses the default startWebLogic.sh en startManagedWebLogic.sh scripts to avoid 
+#	the dependencies on the admin server and the node manager. 
+#
+# CAVEATS
+#	It determines which servers and nodemanagers to boot, by testing the listen-address
+#	of the server and nodemanager configurations in the config.xml. If it is absent,
+#	the script will start an instance on all machines the domain is copied too. 
+#	So set the listen-address!
+#
+#	On the very first boot, it is adviseable to start the admin server machine first. 
+#	On subsequent boots the managed servers will manage to start without.
+#
+# COPYRIGHT
+#	Mark van Holsteijn - Xebia Nederland B.V.  2012
+#
+
+COMMAND=${1:status}
+WL_HOME=${WL_HOME:-/opt/weblogic/wlserver}
+NODEMANAGER_HOME=$WL_HOME/common/nodemanager
+MAXWAIT=12
+
+function allDomains() {
+	grep -v '^#' $WL_HOME/common/nodemanager/nodemanager.domains | \
+		sed -e 's/^[^=]*=//'
+	return 0
+}
+
+function setDomainConfig() {
+		DOMAIN=$(basename $DOMAIN_HOME)
+		DOMAIN_CONFIG=$DOMAIN_HOME/config/config.xml
+		if [ ! -f $DOMAIN_CONFIG ] ; then
+			DOMAIN_CONFIG=$DOMAIN_HOME/config/config_bootstrap.xml
+		fi
+
+		if [ ! -f $DOMAIN_CONFIG ] ; then
+			echo ERROR: Domain configuration file is missing for domain $DOMAIN
+			return 1
+		fi
+		return 0
+}
+
+function getAddress() {
+	echo $(ping -c 1 $1 2>/dev/null | head -1 | awk '{print $3}' | sed -e 's/[()]//g')
+}
+#
+# is address $1 served by this host?
+#
+function onThisHost() {
+
+	ADDRESS=$(getAddress $1)
+	if [ -z "$ADDRESS" ] ; then
+		echo "WARN: no address specified for $1 " >&2
+		return 0
+	fi
+
+	if  expr "$ADDRESS" : '127\.' > /dev/null ; then
+		#echo "INFO: $1 is loopback  address " >&2
+		return 0
+	fi
+
+	PRESENT=$(/sbin/ifconfig | grep -e "addr:$ADDRESS")
+        if [ -z "$PRESENT"  ] ; then
+		#echo "INFO: $1 is NOT on this host." >&2
+		return 1
+	else
+		#echo "INFO: $1 is on this host. " >&2
+		return 0
+	fi
+}
+
+#
+# get the process id of WebLogic Server name $1?
+#
+function getServerPid() {
+  PID=$(ps -ef | grep -e "-Dweblogic.Name=$1" | grep -v grep | awk '{print $2}')
+  echo $PID
+  test -n "$PID" 
+}
+
+#
+# get the process id of the  node manager machine $1?
+#
+function getNodeManagerPid() {
+  ADDRESS=$(getAddress $2)
+  PORT=${3:-5556}
+  PID=$(netstat -n -l -p 2>/dev/null | grep -e $ADDRESS:$PORT -e :::$PORT | sed -e  's/.*LISTEN[^0-9]*\([0-9][0-9]*\).*/\1/')
+  echo $PID
+  test -n "$PID" 
+}
+
+function callStartWebLogic() {
+	JAVA_OPTIONS=$(xmlstarlet sel -N d=http://xmlns.oracle.com/weblogic/domain \
+			-t -m "/d:domain/d:server[d:name='$1']" \
+			-v 'd:server-start/d:arguments' \
+			$DOMAIN_CONFIG 2>/dev/null)
+	export JAVA_OPTIONS
+
+	ADMINSERVERINFO=$(getAdminServer)
+	ADMIN_NAME=$(echo $ADMINSERVERINFO | awk '{print $1}')
+	ADMIN_HOST=$(echo $ADMINSERVERINFO | awk '{print $2}')
+	ADMIN_PORT=$(echo $ADMINSERVERINFO | awk '{print $3}')
+	if [ "$ADMIN_NAME" = "$1" ] ; then
+		nohup $DOMAIN_HOME/startWebLogic.sh >/dev/null 2>&1 &
+	else
+		nohup $DOMAIN_HOME/bin/startManagedWebLogic.sh $1 $ADMIN_HOST:$ADMIN_PORT >/dev/null 2>&1 &
+	fi
+}   
+
+function listAllServers() {
+	xmlstarlet sel -N d=http://xmlns.oracle.com/weblogic/domain \
+			-t -m "/d:domain/d:server[d:name!=/d:domain/d:admin-server-name]" \
+			-v "concat(d:name, '	',  d:listen-address, '	', d:listen-port)" \
+			-n \
+			$DOMAIN_CONFIG 2>/dev/null   | \
+		sed -e '/^[ 	]*$/d' | \
+			awk -vhost=$(hostname) -F"	" 'BEGIN { port = 7001;  } 
+			{ if ($2 == "") $2 = host; 
+                          if ($3 == "") $3 = 7001;
+			  print $1, $2, $3;
+			}' 
+}
+
+function listNodeManagers() {
+	xmlstarlet sel -N d=http://xmlns.oracle.com/weblogic/domain \
+			-t -m "/d:domain/d:machine" \
+			-v "concat(d:name, '	',  d:node-manager/d:listen-address, '	', d:node-manager/d:listen-port)" \
+			-n \
+			$DOMAIN_CONFIG 2>/dev/null   | \
+		sed -e '/^[ 	]*$/d' | \
+			awk -vhost=$(hostname) -F"	" \
+			'{ if ($2 == "") $2 = host; 
+                          if ($4 == "") $3 = 5556;
+			  print $1, $2, $3;
+			}' 
+}
+
+function checkExplicitListenAddress() {
+	xmlstarlet sel -N d=http://xmlns.oracle.com/weblogic/domain \
+			-t -m "/d:domain/d:server" \
+			-v "concat(d:name, '	',  d:listen-address)" \
+			-n \
+			$DOMAIN_CONFIG 2>/dev/null | \
+			awk -F"	" \
+			'
+			{ if ($1 != "" && $2 == "") { 
+				print "WARN: Server " $1 " does not have an explicit listen address and will start on any server." > "/dev/stderr" 
+			  }
+			}' 
+}
+
+function getAdminServer() {
+	xmlstarlet sel -N d=http://xmlns.oracle.com/weblogic/domain \
+			-t -m "/d:domain/d:server[d:name=/d:domain/d:admin-server-name]" \
+			-v "concat(d:name, '	',  d:listen-address, '	', d:listen-port)" \
+			-n \
+			$DOMAIN_CONFIG 2>/dev/null | \
+			sed -e '/^$/d' | \
+			awk -vhost=$(hostname) -F"	" \
+			'
+			{ if ($2 == "") $2 = host; 
+                          if ($3 == "") $3 = 7001;
+			  print $1, $2, $3;
+			}' 
+}
+
+function startServer() {
+
+  if onThisHost $2 ; then
+	if listenerOnPort $2 ${3:-7001} ; then
+		echo "INFO: Server $1 of domain $DOMAIN is already running." 
+	else
+		echo -n "INFO: starting $1 of domain $DOMAIN" 
+		callStartWebLogic $@
+		COUNT=0
+		ISRUNNING=1
+		while [ $ISRUNNING -ne 0 -a $COUNT -lt $MAXWAIT ] ; do
+			sleep 10; echo -n .
+			listenerOnPort $2 ${3:-7001}
+			ISRUNNING=$?
+			COUNT=$(($COUNT +1))
+		done
+		echo
+		if [ $ISRUNNING -eq 1 ] ; then
+			PID=$(getServerPid $1)
+			if [ -z "$PID" ] ; then
+				echo "ERROR: failed to start server $2 of domain $DOMAIN" 2>&1
+				return 1
+			else
+				echo "WARN: server $2 of domain $DOMAIN started but not yet listening on ${3:7001}." 2>&1
+				return 2
+			fi
+		fi
+	fi
+  fi
+}
+
+function stopServer() {
+
+  if onThisHost $2 ; then
+	PID=$(getServerPid $1)
+	if test -n "$PID" && listenerOnPort $2 ${3:-7001} ; then
+		echo -n "INFO: stopping $1 of domain $DOMAIN" 
+		kill -15 $PID
+		COUNT=0
+		ISRUNNING=0
+		while [ $ISRUNNING -eq 0 -a $COUNT -lt $MAXWAIT ] ; do
+			sleep 10; echo -n .
+			listenerOnPort $2 ${3:-7001}
+			ISRUNNING=$?
+			COUNT=$(($COUNT + 1))
+		done
+		echo
+		if [ $ISRUNNING -eq 0 ] ; then
+			echo "ERROR: failed to stop server $2 of domain $DOMAIN. " 2>&1
+			return 1
+		else
+			echo "INFO: Server $1 of domain $DOMAIN is stopped." 
+		fi
+	else
+		echo "INFO: Server $1 of domain $DOMAIN is already stopped." 
+	fi
+  fi
+  return 0
+}
+
+function listenerOnPort() {
+		ADDRESS=$(getAddress $1)
+		LISTENING=$(netstat -a -n | \
+				egrep -e "$ADDRESS:$2[ 	].*LISTEN" -e ":::$2[ 	].*LISTEN" )
+		test -n "$LISTENING"
+		return $?
+}
+
+function stopNodeManager() {
+
+  if onThisHost $2 ; then
+	PID=$(getNodeManagerPid $@)
+	if test -n "$PID" &&  listenerOnPort $2 ${3:-5556} ; then
+		echo -n "INFO: stopping nodemanager $1" 
+		kill -15 $PID
+		COUNT=0
+		ISRUNNING=0
+		while [ -n "$PID" -a $ISRUNNING -eq 0 -a $COUNT -lt $MAXWAIT ] ; do
+			sleep 10; echo -n .
+			listenerOnPort $2 ${3:-5556}
+			ISRUNNING=$?
+			COUNT=$(($COUNT + 1))
+		done
+		echo
+		if [ $ISRUNNING -eq 0 ] ; then
+			echo "ERROR: failed to stop nodemanager $1. " 2>&1
+			return 1
+		else
+			echo "INFO: Nodemanager $1 is stopped." 
+		fi
+	else
+		echo "INFO: NodeManager $1 is already stopped." 
+	fi
+  fi
+  return 0
+}
+
+function statusServer() {
+
+  if onThisHost $2 ; then
+	if listenerOnPort $2 ${3:-7001}; then
+		PID=$(getServerPid $1)
+		if [ -n "$PID" ] ; then
+			echo "INFO: Server $1 of domain $DOMAIN is running on port ${3:-7001} process id $PID." 
+		else
+			echo "INFO: Server $1 of domain $DOMAIN port ${3:-7001} is in use, but there is no process." 
+		fi
+	else
+		echo "INFO: Server $1 of domain $DOMAIN is not running." 
+	fi
+  fi
+}
+
+function statusNodeManager() {
+
+  if onThisHost $2 ; then
+	if listenerOnPort $2 ${3:-5556}; then
+		PID=$(getNodeManagerPid $@)
+		if [ -n "$PID" ] ; then
+			echo "INFO: NodeManager $1 is running on port ${3:-5556} process id $PID." 
+		else
+			echo "WARN: NodeManager $1 port ${3:-5556} is in use, but there is no process." 
+		fi
+	else
+		echo "INFO: NodeManager $1 is not running." 
+	fi
+  fi
+}
+
+function startNodeManager() {
+
+  if onThisHost $2 ; then
+	if listenerOnPort $2 ${3:-5556}; then
+		echo "INFO: NodeManager $1 is already running." 
+	else
+		echo -n "INFO: starting $1" 
+		nohup $WL_HOME/server/bin/startNodeManager.sh  >/dev/null  2>&1 &
+		COUNT=0
+		ISRUNNING=1
+		while [ $ISRUNNING -ne 0 -a $COUNT -lt $MAXWAIT ] ; do
+			sleep 3; echo -n .
+			listenerOnPort $2 ${3:-5556}
+			ISRUNNING=$?
+			COUNT=$(($COUNT + 1))
+		done
+		echo
+		if [ $ISRUNNING -eq 1 ] ; then
+			echo "ERROR: failed to start node manager $2" 2>&1
+			return 1
+		fi
+		
+	fi
+  fi
+}
+
+function stopAllServers() {
+	result=0
+	listAllServers | \
+	while read LINE ; do
+		stopServer $LINE
+		[ $? -ne 0 ] && result=1
+	done
+}
+
+function statusAllServers() {
+	result=0
+	listAllServers | \
+	while read LINE ; do
+		statusServer $LINE
+		[ $? -ne 0 ] && result=1
+	done
+	return $result
+}
+
+function copyBootProperties() {
+	result=0
+	ADMIN=$(getAdminServer | awk '{print $1}')
+	SOURCE=$DOMAIN_HOME/servers/$ADMIN/security/boot.properties
+	if [ -f $SOURCE ] ; then
+		listAllServers | \
+		while read LINE ; do
+			set $LINE
+			SERVER=$1
+			if onThisHost $2 ; then
+			    TARGETDIR=$DOMAIN_HOME/servers/$SERVER/security
+			    if [ ! -f $TARGETDIR/boot.properties ] ; then
+				mkdir -p $TARGETDIR
+				cp -f $SOURCE $TARGETDIR
+				[ $? -ne 0 ] && result=1
+				echo "INFO: copied boot.properties to $SERVER" >&2
+			    fi
+			fi
+		done
+	else
+		echo "ERROR: No boot.properties found for the admin server to copy. "
+		result=1
+	fi
+	return $result
+}
+
+function startAllServers() {
+	result=0
+	listAllServers | \
+	while read LINE ; do
+		startServer $LINE
+		[ $? -ne 0 ] && result=1
+	done
+	return $result
+}
+
+function statusAllNodeManagers() {
+	result=0
+	listNodeManagers | \
+	while read LINE ; do
+		statusNodeManager $LINE
+		[ $? -ne 0 ] && result=1
+	done
+	return $result
+}
+
+function startAllNodeManagers() {
+	result=0
+	listNodeManagers | \
+	while read LINE ; do
+		startNodeManager $LINE
+		[ $? -ne 0 ] && result=1
+	done
+	return $result
+}
+
+function stopAllNodeManagers() {
+	result=0
+	listNodeManagers | \
+	while read LINE ; do
+		stopNodeManager $LINE
+		[ $? -ne 0 ] && result=1
+	done
+	return $result
+}
+
+xmlStarletXists=$(which xmlstarlet 2> /dev/null)
+if [ -z "$xmlStarletXists" ]; then
+	echo "ERROR: I am useless without an installation of xmlstarlet! Please install" >&1
+	exit 1;
+fi
+
+if [ $COMMAND = "stop" ] ; then
+
+	for DOMAIN_HOME in $(allDomains) ; do
+		if setDomainConfig $DOMAIN_HOME ; then
+			stopAllServers
+			stopServer $(getAdminServer)
+			stopAllNodeManagers
+		fi
+	done
+fi
+
+if [ $COMMAND = "status" ] ; then
+
+	for DOMAIN_HOME in $(allDomains) ; do
+		if setDomainConfig $DOMAIN_HOME ; then
+			checkExplicitListenAddress
+			statusAllNodeManagers
+			statusServer $(getAdminServer)
+			statusAllServers
+		fi
+	done
+fi
+
+if [ $COMMAND = "start" ]; then
+	for DOMAIN_HOME in $(allDomains) ; do
+		if setDomainConfig $DOMAIN_HOME ; then
+			checkExplicitListenAddress
+			startAllNodeManagers
+			startServer $(getAdminServer)
+			copyBootProperties
+			startAllServers
+		fi
+	done
+fi
+
