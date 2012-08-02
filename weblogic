@@ -34,6 +34,9 @@ function allDomains() {
 	return 0
 }
 
+#
+# Set ths domain configuration file for the domain $DOMAIN_HOME.
+#
 function setDomainConfig() {
 		DOMAIN=$(basename $DOMAIN_HOME)
 		DOMAIN_CONFIG=$DOMAIN_HOME/config/config.xml
@@ -42,12 +45,15 @@ function setDomainConfig() {
 		fi
 
 		if [ ! -f $DOMAIN_CONFIG ] ; then
-			echo ERROR: Domain configuration file is missing for domain $DOMAIN
+			echo ERROR: Domain configuration file is missing for domain $DOMAIN >&2
 			return 1
 		fi
 		return 0
 }
 
+#
+# Gets the ip address of host $1.
+#
 function getAddress() {
 	echo $(ping -c 1 $1 2>/dev/null | head -1 | awk '{print $3}' | sed -e 's/[()]//g')
 }
@@ -78,7 +84,7 @@ function onThisHost() {
 }
 
 #
-# get the process id of WebLogic Server name $1?
+# get the process id of WebLogic Server name $1
 #
 function getServerPid() {
   PID=$(ps -ef | grep -e "-Dweblogic.Name=$1" | grep -v grep | awk '{print $2}')
@@ -97,6 +103,9 @@ function getNodeManagerPid() {
   test -n "$PID" 
 }
 
+#
+# start WebLogic Server $1 by calling the appropriate script in the domain.
+#
 function callStartWebLogic() {
 	JAVA_OPTIONS=$(xmlstarlet sel -N d=http://xmlns.oracle.com/weblogic/domain \
 			-t -m "/d:domain/d:server[d:name='$1']" \
@@ -113,8 +122,11 @@ function callStartWebLogic() {
 	else
 		nohup $DOMAIN_HOME/bin/startManagedWebLogic.sh $1 $ADMIN_HOST:$ADMIN_PORT >/dev/null 2>&1 &
 	fi
-}   
+} 
 
+#
+# lists all non admin servers in the domain configuration file.
+#
 function listAllServers() {
 	xmlstarlet sel -N d=http://xmlns.oracle.com/weblogic/domain \
 			-t -m "/d:domain/d:server[d:name!=/d:domain/d:admin-server-name]" \
@@ -129,6 +141,9 @@ function listAllServers() {
 			}' 
 }
 
+#
+# lists all node managers in the domain configuration file.
+#
 function listNodeManagers() {
 	xmlstarlet sel -N d=http://xmlns.oracle.com/weblogic/domain \
 			-t -m "/d:domain/d:machine" \
@@ -143,6 +158,9 @@ function listNodeManagers() {
 			}' 
 }
 
+#
+# Check that all servers have an explicit listen-address specification in the domain configuration file.
+#
 function checkExplicitListenAddress() {
 	xmlstarlet sel -N d=http://xmlns.oracle.com/weblogic/domain \
 			-t -m "/d:domain/d:server" \
@@ -157,6 +175,9 @@ function checkExplicitListenAddress() {
 			}' 
 }
 
+#
+# gets the admin server from the domain configuration file. 
+#
 function getAdminServer() {
 	xmlstarlet sel -N d=http://xmlns.oracle.com/weblogic/domain \
 			-t -m "/d:domain/d:server[d:name=/d:domain/d:admin-server-name]" \
@@ -172,6 +193,9 @@ function getAdminServer() {
 			}' 
 }
 
+#
+# Start the server if it is not already running.
+#
 function startServer() {
 
   if onThisHost $2 ; then
@@ -203,6 +227,9 @@ function startServer() {
   fi
 }
 
+#
+# Stops the server if it is running.
+#
 function stopServer() {
 
   if onThisHost $2 ; then
@@ -232,6 +259,10 @@ function stopServer() {
   return 0
 }
 
+
+#
+# tests if there is a listener on port $2 of  network address $1
+#
 function listenerOnPort() {
 		ADDRESS=$(getAddress $1)
 		LISTENING=$(netstat -a -n | \
@@ -240,9 +271,11 @@ function listenerOnPort() {
 		return $?
 }
 
+#
+# stop the node manager if it is running.
 function stopNodeManager() {
 
-  if onThisHost $2 ; then
+ if onThisHost $2 ; then
 	PID=$(getNodeManagerPid $@)
 	if test -n "$PID" &&  listenerOnPort $2 ${3:-5556} ; then
 		echo -n "INFO: stopping nodemanager $1" 
@@ -269,6 +302,9 @@ function stopNodeManager() {
   return 0
 }
 
+#
+# output the status of the server 
+#
 function statusServer() {
 
   if onThisHost $2 ; then
@@ -285,6 +321,9 @@ function statusServer() {
   fi
 }
 
+#
+# Output the status of the node manager.
+#
 function statusNodeManager() {
 
   if onThisHost $2 ; then
@@ -301,6 +340,9 @@ function statusNodeManager() {
   fi
 }
 
+#
+# Start the node manager if on this host and it is not running.
+#
 function startNodeManager() {
 
   if onThisHost $2 ; then
@@ -327,6 +369,9 @@ function startNodeManager() {
   fi
 }
 
+#
+# stop all managed servers.
+#
 function stopAllServers() {
 	result=0
 	listAllServers | \
@@ -334,8 +379,12 @@ function stopAllServers() {
 		stopServer $LINE
 		[ $? -ne 0 ] && result=1
 	done
+	return $result
 }
 
+#
+# report the status of all servers.
+#
 function statusAllServers() {
 	result=0
 	listAllServers | \
@@ -346,6 +395,9 @@ function statusAllServers() {
 	return $result
 }
 
+#
+# copy the boot.properties of the admin server to the managed servers if it is missing.
+#
 function copyBootProperties() {
 	result=0
 	ADMIN=$(getAdminServer | awk '{print $1}')
@@ -372,6 +424,9 @@ function copyBootProperties() {
 	return $result
 }
 
+#
+# start all managed servers.
+#
 function startAllServers() {
 	result=0
 	listAllServers | \
@@ -382,6 +437,10 @@ function startAllServers() {
 	return $result
 }
 
+
+# 
+# report the status of all node managers
+#
 function statusAllNodeManagers() {
 	result=0
 	listNodeManagers | \
@@ -392,6 +451,9 @@ function statusAllNodeManagers() {
 	return $result
 }
 
+# 
+# start all node managers.
+#
 function startAllNodeManagers() {
 	result=0
 	listNodeManagers | \
@@ -402,6 +464,9 @@ function startAllNodeManagers() {
 	return $result
 }
 
+# 
+# stop all the node managers.
+#
 function stopAllNodeManagers() {
 	result=0
 	listNodeManagers | \
@@ -412,9 +477,17 @@ function stopAllNodeManagers() {
 	return $result
 }
 
+#
+# Test the pre-conditions
+#
 xmlStarletXists=$(which xmlstarlet 2> /dev/null)
 if [ -z "$xmlStarletXists" ]; then
-	echo "ERROR: I am useless without an installation of xmlstarlet! Please install" >&1
+	echo "ERROR: I am useless without an installation of xmlstarlet! Please install" >&2
+	exit 1;
+fi
+
+if [ ! -d $WL_HOME -a ! -d $NODEMANAGER_HOME ] ; then
+	echo "ERROR: It does not appear as if WL_HOME is pointing to a WebLogic Server installation directory." >&2
 	exit 1;
 fi
 
