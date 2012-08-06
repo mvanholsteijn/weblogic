@@ -1,4 +1,19 @@
 #!/bin/bash
+#
+#  Copyright 2012 Xebia Nederland B.V.
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+#
 # NAME
 #	weblogic - weblogic service control script
 #
@@ -6,25 +21,28 @@
 #	weblogic [start|stop|status]
 #
 # DESCRIPTION
-#	This script will start all weblogic servers from installed domains on this machine.
-#	It uses the default startWebLogic.sh en startManagedWebLogic.sh scripts to avoid 
-#	the dependencies on the admin server and the node manager. 
+#	This script will start all weblogic servers from installed domains 
+#	on this machine. It uses the default startWebLogic.sh and 
+#	startManagedWebLogic.sh scripts to avoid the dependencies on the 
+#	admin server and the node manager. 
 #
 # CAVEATS
-#	It determines which servers and nodemanagers to boot, by testing the listen-address
-#	of the server and nodemanager configurations in the config.xml. If it is absent,
-#	the script will start an instance on all machines the domain is copied too. 
-#	So set the listen-address!
+#	It determines which servers and nodemanagers to boot, by testing the 
+#	listen-address of the server and nodemanager configurations in the 
+#	config.xml. If it is absent, the script will start an instance on 
+#	all machines the domain is copied too. So set the listen-address!
 #
-#	On the very first boot, it is adviseable to start the admin server machine first. 
-#	On subsequent boots the managed servers will manage to start without.
+#	On the very first boot, it is adviseable to start the admin server 
+#	machine first.  On subsequent boots the managed servers will 
+#	manage to start without.
 #
 # COPYRIGHT
-#	Mark van Holsteijn - Xebia Nederland B.V.  2012
+# 	Copyright 2012 Xebia Nederland B.V.
 #
 
 COMMAND=${1:status}
-WL_HOME=${WL_HOME:-/opt/weblogic/wlserver}
+MW_HOME=${MW_HOME:-/opt/weblogic}
+WL_HOME=${WL_HOME:-${MW_HOME}/wlserver}
 NODEMANAGER_HOME=$WL_HOME/common/nodemanager
 MAXWAIT=12
 
