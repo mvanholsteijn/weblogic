@@ -56,6 +56,7 @@ function allDomains() {
 # Set ths domain configuration file for the domain $DOMAIN_HOME.
 #
 function setDomainConfig() {
+		DOMAIN_HOME=$1
 		DOMAIN=$(basename $DOMAIN_HOME)
 		DOMAIN_CONFIG=$DOMAIN_HOME/config/config.xml
 		if [ ! -f $DOMAIN_CONFIG ] ; then
@@ -66,6 +67,7 @@ function setDomainConfig() {
 			echo ERROR: Domain configuration file is missing for domain $DOMAIN >&2
 			return 1
 		fi
+		export DOMAIN_HOME DOMAIN DOMAIN_CONFIG
 		return 0
 }
 
@@ -148,11 +150,11 @@ function callStartWebLogic() {
 function listAllServers() {
 	xmlstarlet sel -N d=http://xmlns.oracle.com/weblogic/domain \
 			-t -m "/d:domain/d:server[d:name!=/d:domain/d:admin-server-name]" \
-			-v "concat(d:name, '	',  d:listen-address, '	', d:listen-port)" \
+			-v "concat(d:name, ';',  d:listen-address, ';', d:listen-port)" \
 			-n \
 			$DOMAIN_CONFIG 2>/dev/null   | \
 		sed -e '/^[ 	]*$/d' | \
-			awk -vhost=$(hostname) -F"	" 'BEGIN { port = 7001;  } 
+			awk -vhost=$(hostname) -F";" 'BEGIN { port = 7001;  } 
 			{ if ($2 == "") $2 = host; 
                           if ($3 == "") $3 = 7001;
 			  print $1, $2, $3;
@@ -165,11 +167,11 @@ function listAllServers() {
 function listNodeManagers() {
 	xmlstarlet sel -N d=http://xmlns.oracle.com/weblogic/domain \
 			-t -m "/d:domain/d:machine" \
-			-v "concat(d:name, '	',  d:node-manager/d:listen-address, '	', d:node-manager/d:listen-port)" \
+			-v "concat(d:name, ';',  d:node-manager/d:listen-address, ';', d:node-manager/d:listen-port)" \
 			-n \
 			$DOMAIN_CONFIG 2>/dev/null   | \
 		sed -e '/^[ 	]*$/d' | \
-			awk -vhost=$(hostname) -F"	" \
+			awk -vhost=$(hostname) -F";" \
 			'{ if ($2 == "") $2 = host; 
                           if ($4 == "") $3 = 5556;
 			  print $1, $2, $3;
@@ -182,13 +184,13 @@ function listNodeManagers() {
 function checkExplicitListenAddress() {
 	xmlstarlet sel -N d=http://xmlns.oracle.com/weblogic/domain \
 			-t -m "/d:domain/d:server" \
-			-v "concat(d:name, '	',  d:listen-address)" \
+			-v "concat(d:name, ';',  d:listen-address)" \
 			-n \
 			$DOMAIN_CONFIG 2>/dev/null | \
-			awk -F"	" \
+			awk -F";" -vdomain=$DOMAIN \
 			'
 			{ if ($1 != "" && $2 == "") { 
-				print "WARN: Server " $1 " does not have an explicit listen address and will start on any server." > "/dev/stderr" 
+				print "WARN: The server " $1 " of domain " domain " does not have an explicit listen address and will start on any server." > "/dev/stderr" 
 			  }
 			}' 
 }
@@ -199,11 +201,11 @@ function checkExplicitListenAddress() {
 function getAdminServer() {
 	xmlstarlet sel -N d=http://xmlns.oracle.com/weblogic/domain \
 			-t -m "/d:domain/d:server[d:name=/d:domain/d:admin-server-name]" \
-			-v "concat(d:name, '	',  d:listen-address, '	', d:listen-port)" \
+			-v "concat(d:name, ';',  d:listen-address, ';', d:listen-port)" \
 			-n \
 			$DOMAIN_CONFIG 2>/dev/null | \
 			sed -e '/^$/d' | \
-			awk -vhost=$(hostname) -F"	" \
+			awk -vhost=$(hostname) -F";" \
 			'
 			{ if ($2 == "") $2 = host; 
                           if ($3 == "") $3 = 7001;
@@ -509,37 +511,50 @@ if [ ! -d $WL_HOME -a ! -d $NODEMANAGER_HOME ] ; then
 	exit 1;
 fi
 
-if [ $COMMAND = "stop" ] ; then
+function stopDomain() {
+	stopAllServers
+	stopServer $(getAdminServer)
+	stopAllNodeManagers
+}
 
-	for DOMAIN_HOME in $(allDomains) ; do
-		if setDomainConfig $DOMAIN_HOME ; then
-			stopAllServers
-			stopServer $(getAdminServer)
-			stopAllNodeManagers
+function statusDomain() {
+	checkExplicitListenAddress
+	statusAllNodeManagers
+	statusServer $(getAdminServer)
+	statusAllServers
+}
+
+function startDomain() {
+	checkExplicitListenAddress
+	startAllNodeManagers
+	startServer $(getAdminServer)
+	copyBootProperties
+	startAllServers
+}
+
+if [ "$COMMAND" = "stop" ] ; then
+
+	for domain in $(allDomains) ; do
+		if setDomainConfig $domain; then
+			stopDomain
 		fi
 	done
 fi
 
-if [ $COMMAND = "status" ] ; then
+if [ "$COMMAND" = "status" ] ; then
 
-	for DOMAIN_HOME in $(allDomains) ; do
-		if setDomainConfig $DOMAIN_HOME ; then
-			checkExplicitListenAddress
-			statusAllNodeManagers
-			statusServer $(getAdminServer)
-			statusAllServers
+	for domain in $(allDomains) ; do
+		if setDomainConfig $domain ; then
+			statusDomain
 		fi
 	done
 fi
 
-if [ $COMMAND = "start" ]; then
-	for DOMAIN_HOME in $(allDomains) ; do
-		if setDomainConfig $DOMAIN_HOME ; then
-			checkExplicitListenAddress
-			startAllNodeManagers
-			startServer $(getAdminServer)
-			copyBootProperties
-			startAllServers
+
+if [ "$COMMAND" = "start" ]; then
+	for domain in $(allDomains) ; do
+		if setDomainConfig $domain ; then
+			startDomain
 		fi
 	done
 fi
