@@ -46,18 +46,24 @@ WL_HOME=${WL_HOME:-${MW_HOME}/wlserver}
 NODEMANAGER_HOME=$WL_HOME/common/nodemanager
 MAXWAIT=12
 
-function allDomains() {
+function listAllDomainNames() {
 	grep -v '^#' $WL_HOME/common/nodemanager/nodemanager.domains | \
-		sed -e 's/^[^=]*=//'
+		sed -e 's/=.*//'
 	return 0
 }
 
-#
-# Set ths domain configuration file for the domain $DOMAIN_HOME.
-#
-function setDomainConfig() {
-		DOMAIN_HOME=$1
-		DOMAIN=$(basename $DOMAIN_HOME)
+function listAllDomains() {
+	grep -v '^#' $WL_HOME/common/nodemanager/nodemanager.domains | \
+		sed -e 's/=/	/'
+	return 0
+}
+
+function setDomain() {
+	DIR=$(grep "$1=" $WL_HOME/common/nodemanager/nodemanager.domains | \
+		sed -e 's/^[^=]*=//')
+	if [ -n "$DIR" ] ; then
+		DOMAIN=$1
+		DOMAIN_HOME=$DIR
 		DOMAIN_CONFIG=$DOMAIN_HOME/config/config.xml
 		if [ ! -f $DOMAIN_CONFIG ] ; then
 			DOMAIN_CONFIG=$DOMAIN_HOME/config/config_bootstrap.xml
@@ -69,6 +75,11 @@ function setDomainConfig() {
 		fi
 		export DOMAIN_HOME DOMAIN DOMAIN_CONFIG
 		return 0
+	else
+		echo ERROR: domain $1 is not installed.
+		return 1
+	fi
+	return 0
 }
 
 #
@@ -93,7 +104,7 @@ function onThisHost() {
 		return 0
 	fi
 
-	PRESENT=$(/sbin/ifconfig | grep -e "addr:$ADDRESS")
+	PRESENT=$(/sbin/ifconfig | grep -e "addr:[ \t]*$ADDRESS")
         if [ -z "$PRESENT"  ] ; then
 		#echo "INFO: $1 is NOT on this host." >&2
 		return 1
@@ -167,14 +178,14 @@ function listAllServers() {
 function listNodeManagers() {
 	xmlstarlet sel -N d=http://xmlns.oracle.com/weblogic/domain \
 			-t -m "/d:domain/d:machine" \
-			-v "concat(d:name, ';',  d:node-manager/d:listen-address, ';', d:node-manager/d:listen-port)" \
+			-v "concat(d:name, ';',  d:node-manager/d:listen-address, ';', d:node-manager/d:listen-port, ';', d:node-manager/d:nm-type)" \
 			-n \
 			$DOMAIN_CONFIG 2>/dev/null   | \
 		sed -e '/^[ 	]*$/d' | \
 			awk -vhost=$(hostname) -F";" \
 			'{ if ($2 == "") $2 = host; 
-                          if ($4 == "") $3 = 5556;
-			  print $1, $2, $3;
+                          if ($3 == "") $3 = 5556;
+			  print $1, $2, $3, $4;
 			}' 
 }
 
@@ -416,6 +427,26 @@ function statusAllServers() {
 }
 
 #
+# set boot.properties of the admin server
+#
+function installBootProperties() {
+	if [ -z "$DOMAIN_HOME" ] ; then
+		echo ERROR: select a domain first using setDomain.
+		return 1
+	fi
+	if [ $# -ne 2 ] ; then
+		echo "ERROR: usage: installBootProperties username password"
+		return 1
+	fi
+	ADMIN=$(getAdminServer | awk '{print $1}')
+	SOURCE=$DOMAIN_HOME/servers/$ADMIN/security/boot.properties
+	mkdir -p $(dirname $SOURCE)
+	echo "username=$1" > $SOURCE
+	echo "password=$2" >> $SOURCE
+}
+
+# 
+#
 # copy the boot.properties of the admin server to the managed servers if it is missing.
 #
 function copyBootProperties() {
@@ -497,20 +528,6 @@ function stopAllNodeManagers() {
 	return $result
 }
 
-#
-# Test the pre-conditions
-#
-xmlStarletXists=$(which xmlstarlet 2> /dev/null)
-if [ -z "$xmlStarletXists" ]; then
-	echo "ERROR: I am useless without an installation of xmlstarlet! Please install" >&2
-	exit 1;
-fi
-
-if [ ! -d $WL_HOME -a ! -d $NODEMANAGER_HOME ] ; then
-	echo "ERROR: It does not appear as if WL_HOME is pointing to a WebLogic Server installation directory." >&2
-	exit 1;
-fi
-
 function stopDomain() {
 	stopAllServers
 	stopServer $(getAdminServer)
@@ -532,10 +549,25 @@ function startDomain() {
 	startAllServers
 }
 
+#
+# Test the pre-conditions
+#
+xmlStarletXists=$(which xmlstarlet 2> /dev/null)
+if [ -z "$xmlStarletXists" ]; then
+	echo "ERROR: I am useless without an installation of xmlstarlet! Please install" >&2
+	exit 1
+fi
+
+if [ ! -d $WL_HOME -a ! -d $NODEMANAGER_HOME ] ; then
+	echo "ERROR: It does not appear as if WL_HOME is pointing to a WebLogic Server installation directory." >&2
+	exit 1
+fi
+
+
 if [ "$COMMAND" = "stop" ] ; then
 
-	for domain in $(allDomains) ; do
-		if setDomainConfig $domain; then
+	for domain in $(listAllDomainNames) ; do
+		if setDomain $domain; then
 			stopDomain
 		fi
 	done
@@ -543,8 +575,8 @@ fi
 
 if [ "$COMMAND" = "status" ] ; then
 
-	for domain in $(allDomains) ; do
-		if setDomainConfig $domain ; then
+	for domain in $(listAllDomainNames) ; do
+		if setDomain $domain ; then
 			statusDomain
 		fi
 	done
@@ -552,8 +584,8 @@ fi
 
 
 if [ "$COMMAND" = "start" ]; then
-	for domain in $(allDomains) ; do
-		if setDomainConfig $domain ; then
+	for domain in $(listAllDomainNames) ; do
+		if setDomain $domain ; then
 			startDomain
 		fi
 	done
