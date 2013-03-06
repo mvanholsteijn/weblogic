@@ -173,6 +173,18 @@ function listAllServers() {
 }
 
 #
+# list all Servers on this host, including the Admin server
+#
+function listAllServersOnThisHost() {
+	( getAdminServer ; listAllServers ) | while read LINE ; do
+		set $LINE
+		if onThisHost $2 ; then
+			echo $LINE
+		fi
+	done
+}
+
+#
 # lists all node managers in the domain configuration file.
 #
 function listNodeManagers() {
