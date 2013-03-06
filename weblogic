@@ -450,11 +450,15 @@ function installBootProperties() {
 		echo "ERROR: usage: installBootProperties username password"
 		return 1
 	fi
-	ADMIN=$(getAdminServer | awk '{print $1}')
-	SOURCE=$DOMAIN_HOME/servers/$ADMIN/security/boot.properties
-	mkdir -p $(dirname $SOURCE)
-	echo "username=$1" > $SOURCE
-	echo "password=$2" >> $SOURCE
+	listAllServersOnThisHost | awk '{print $1}' | while read SERVER ; do
+		SOURCE=$DOMAIN_HOME/servers/$SERVER/security/boot.properties
+		if [  -f $SOURCE ] ; then
+			echo WARN: $SOURCE already exist. overwriting...
+		fi
+		mkdir -p $(dirname $SOURCE)
+		echo "username=$1" > $SOURCE
+		echo "password=$2" >> $SOURCE
+	done
 }
 
 # 
