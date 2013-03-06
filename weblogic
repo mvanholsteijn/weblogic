@@ -461,6 +461,124 @@ function installBootProperties() {
 	done
 }
 
+
+#
+# Is this script running on the AdminServer?
+#
+function runningOnAdminServer() {	
+	ADMINSERVERINFO=$(getAdminServer)
+	ADMIN_NAME=$(echo $ADMINSERVERINFO | awk '{print $1}')
+	ADMIN_HOST=$(echo $ADMINSERVERINFO | awk '{print $2}')
+	ADMIN_PORT=$(echo $ADMINSERVERINFO | awk '{print $3}')
+	onThisHost $ADMIN_HOST 
+	return $?
+}
+
+#
+# 
+#
+function destroyDomain() {
+
+	result=0
+	if [ -n "$DOMAIN" -a -n "$DOMAIN_HOME" -a -n "$WL_HOME" -a -n "$MW_HOME" ] ; then
+		if [ -f $WL_HOME/common/nodemanager/nodemanager.domains ] ; then
+			(
+			cd $WL_HOME/common/nodemanager && \
+			mv nodemanager.domains nodemanager.domains.org && \
+			grep -v $DOMAIN=$DOMAIN_HOME nodemanager.domains.org > nodemanager.domains
+			)
+			result=$?
+		else
+			echo WARN: nodemanager.domains is missing from $WL_HOME/common/nodemanager.
+		fi
+
+		if [ -f $MW_HOME/domain-registry.xml ] ; then
+			(
+				cd $MW_HOME && \
+				mv domain-registry.xml domain-registry.xml.org &&  \
+				grep -v $DOMAIN_HOME domain-registry.xml.org > domain-registry.xml
+				exit $?
+			)
+			[ $result -eq 0 ] && result=$?
+		else
+			echo WARN: domain-registry.xml is missing from $WL_HOME.
+		fi
+
+		rm -rf $DOMAIN_HOME  || echo ERROR: failed to delete $DOMAIN_HOME && result=1
+	else
+		echo ERROR: did you do a setDomain?
+		result=1
+	fi
+
+        return $result;
+}
+
+#
+# 
+#
+function destroyDomainOnManagedServers() {
+	result=0
+	if runningOnAdminServer ; then
+		listNodeManagers | while read LINE; do
+			(
+			set $LINE
+			echo INFO removing domain from machine $1
+			if ! onThisHost $2 ; then
+				scp -q  -P $3 $BASH_SOURCE $2:$HOME/weblogic
+				ssh -p $3 $2 \
+					". $WL_HOME/common/bin/commEnv.sh ; . \$HOME/weblogic ; setDomain $DOMAIN && destroyDomain ; exit $?" < /dev/null
+				result=$?
+				if [ $result -ne 0 ] ;then
+					echo ERROR: failed to remove domain from machine $1.
+				fi
+			fi
+			)
+		done
+	else
+		echo ERROR: You cannot run this on a managed server.
+		result=1
+	fi
+	return $result
+}
+
+#
+# 
+#
+function distributeDomainToManagedServers() {
+
+	result=0
+	if runningOnAdminServer ; then
+		export MSTEMPLATE=$DOMAIN-$$-packed-domain.jar
+
+		
+		$WL_HOME/common/bin/pack.sh \
+			-template=${TMP:-/tmp}/$MSTEMPLATE \
+			-domain=$DOMAIN_HOME \
+			-managed=true \
+			-template_name="packed domain managed servers $DOMAIN"
+
+		listNodeManagers | while read LINE; do
+			set $LINE
+			if ! onThisHost $2 ; then
+				echo INFO: copying template $MSTEMPLATE to machine $1
+				scp -q -P $3 $BASH_SOURCE ${TMP:-/tmp}/$MSTEMPLATE $2:$HOME 
+				ssh -p $3 $2 \
+					". $WL_HOME/common/bin/commEnv.sh ; $WL_HOME/common/bin/unpack.sh -template=\$HOME/$MSTEMPLATE -domain=$DOMAIN_HOME ; exit $?" \
+					< /dev/null
+				result=$?
+				if [ $result -ne 0 ] ;then
+					echo ERROR: failed to unpack the domain on machine $1.
+				fi
+			fi
+		done
+		rm ${TMP:-/tmp}/$MSTEMPLATE
+	else
+		echo ERROR: You cannot run this on a managed server.
+		result=1
+	fi
+	return $result
+}
+
 # 
 #
 # copy the boot.properties of the admin server to the managed servers if it is missing.
